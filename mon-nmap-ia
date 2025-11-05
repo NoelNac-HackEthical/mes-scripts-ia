@@ -1,16 +1,20 @@
 #!/usr/bin/env bash
 # NAME=mon-nmap-ia
-# VERSION=9.0.0
-# DESCRIPTION=Version finale ultra-stable et KISS
+# VERSION=11.0.0
+# DESCRIPTION=Version ultra-minimaliste et ultra-robuste
 # Utilisation : mon-nmap-ia [--debug] <IP|HOST>
 
 set -euo pipefail
 
-# Couleurs
-GREEN=$'\033[1;32m'; YELLOW=$'\033[1;33m'; BLUE=$'\033[1;34m'; RED=$'\033[1;31m'; NC=$'\033[0m'
+# Couleurs basiques
+GREEN='\033[1;32m'
+YELLOW='\033[1;33m'
+BLUE='\033[1;34m'
+RED='\033[1;31m'
+NC='\033[0m'
 
-# Vérification des dépendances
-command -v nmap >/dev/null || { echo -e "${RED}nmap manquant${NC}"; exit 1; }
+# Vérification de nmap
+command -v nmap >/dev/null 2>&1 || { echo -e "${RED}nmap manquant${NC}"; exit 1; }
 
 # Gestion du flag --debug
 DEBUG=false
@@ -19,7 +23,7 @@ if [[ "$1" == "--debug" ]]; then
   shift
 fi
 
-TARGET="${1:-}"
+TARGET="$1"
 [[ -z "$TARGET" ]] && { echo -e "${RED}Usage: $0 [--debug] <IP|HOST>${NC}"; exit 1; }
 
 # Dossier de sortie
@@ -30,43 +34,34 @@ FULL_SCAN="$DOSSIER/nmap_full.txt"
 # Initialisation
 : > "$FULL_SCAN"
 
-# Fonction pour exécuter un scan Nmap
+# Fonction ultra-simple pour exécuter un scan
 run_scan() {
   local step=$1
   local description=$2
-  local nmap_cmd=$3
-  local output_file=$4
+  local cmd=$3
+  local output=$4
 
   echo -e "${BLUE}[${step}] ${description}...${NC}"
-  if $DEBUG; then echo -e "${BLUE}[DEBUG]${NC} $nmap_cmd"; fi
+  if $DEBUG; then echo -e "${BLUE}[DEBUG]${NC} $cmd"; fi
 
-  # Exécution directe sans timeout (plus simple et plus fiable)
-  if ! eval "$nmap_cmd" > "$output_file" 2>&1; then
-    echo -e "${RED}Échec du scan ${step}${NC}"
-    echo "Erreur lors de l'exécution de: $nmap_cmd" > "$output_file"
-  fi
-
-  # Vérification du fichier de sortie
-  if [[ ! -s "$output_file" ]]; then
-    echo -e "${RED}Le fichier ${output_file} est vide${NC}"
-    echo "Aucun résultat pour ce scan" > "$output_file"
-  fi
+  # Exécution directe et simple
+  eval "$cmd > $output 2>&1"
 
   # Ajout au fichier complet
   echo -e "\n\n#==============================================#" >> "$FULL_SCAN"
   echo -e "# ${description}" >> "$FULL_SCAN"
   echo -e "#==============================================#\n" >> "$FULL_SCAN"
-  cat "$output_file" >> "$FULL_SCAN"
-  echo -e "${GREEN}OK: ${output_file}${NC}"
+  cat "$output" >> "$FULL_SCAN" 2>/dev/null || echo "Aucun résultat" >> "$FULL_SCAN"
+  echo -e "${GREEN}OK: ${output}${NC}"
 }
 
 # 1. Scan TCP complet
-run_scan 1 "Scan TCP complet (1-65535)" \
+run_scan 1 "Scan TCP complet" \
           "nmap -Pn -p- --min-rate 10000 -T4 --max-retries 3 -oN ${DOSSIER}/1-tcp_scan.txt $TARGET" \
           "${DOSSIER}/1-tcp_scan.txt"
 
 # Extraction des ports
-PORTS=$(grep -E '^[0-9]+/tcp.*open' "${DOSSIER}/1-tcp_scan.txt" | cut -d'/' -f1 | sort -un | tr '\n' ',' | sed 's/,$//')
+PORTS=$(grep -E '^[0-9]+/tcp.*open' "${DOSSIER}/1-tcp_scan.txt" 2>/dev/null | cut -d'/' -f1 | sort -u | tr '\n' ',' | sed 's/,$//')
 if [[ -z "$PORTS" ]]; then
   echo -e "${RED}Aucun port TCP ouvert détecté${NC}"
   exit 1
@@ -74,57 +69,53 @@ fi
 echo -e "${GREEN}Ports ouverts: $PORTS${NC}"
 
 # 2. Scan agressif
-run_scan 2 "Scan agressif (-A)" \
+run_scan 2 "Scan agressif" \
           "nmap -Pn -A -T4 -p$PORTS -oN ${DOSSIER}/2-aggressive_scan.txt $TARGET" \
           "${DOSSIER}/2-aggressive_scan.txt"
 
 # 3. Scan UDP
-run_scan 3 "Scan UDP top 20" \
-          "nmap -Pn -sU --top-ports 20 -T4 --max-retries 2 --host-timeout 10m -oN ${DOSSIER}/3-udp_scan.txt $TARGET" \
+run_scan 3 "Scan UDP" \
+          "nmap -Pn -sU --top-ports 20 -T4 -oN ${DOSSIER}/3-udp_scan.txt $TARGET" \
           "${DOSSIER}/3-udp_scan.txt"
 
-# 4. NSE WEB (simplifié)
-WEB_SCRIPTS="http-title,http-enum,http-methods,http-headers,http-vhosts,http-server-header,http-robots.txt"
+# 4. NSE WEB
+WEB_SCRIPTS="http-title,http-enum,http-methods,http-headers"
 run_scan 4 "NSE WEB" \
           "nmap -Pn -sV -p$PORTS --script=\"$WEB_SCRIPTS\" -T4 -oN ${DOSSIER}/4-nse-web.txt $TARGET" \
           "${DOSSIER}/4-nse-web.txt"
 
-# 5. NSE SSL (avec Heartbleed)
+# 5. NSE SSL (si 443)
 if echo "$PORTS" | grep -q "443"; then
-  SSL_SCRIPTS="ssl-enum-ciphers,ssl-cert,ssl-heartbleed"
-  run_scan 5 "NSE SSL (Heartbleed)" \
-            "nmap -Pn -sV -p443 --script=\"$SSL_SCRIPTS\" --script-args=heartbleed=verbose -T4 -oN ${DOSSIER}/5-nse-ssl.txt $TARGET" \
+  run_scan 5 "NSE SSL" \
+            "nmap -Pn -sV -p443 --script=\"ssl-enum-ciphers,ssl-cert,ssl-heartbleed\" -T4 -oN ${DOSSIER}/5-nse-ssl.txt $TARGET" \
             "${DOSSIER}/5-nse-ssl.txt"
 else
-  echo -e "${YELLOW}Pas de port SSL (443) détecté${NC}"
+  echo -e "${YELLOW}Pas de port SSL (443)${NC}"
 fi
 
 # 6. NSE VULN (simplifié)
-VULN_SCRIPTS="vuln,exploit,http-vuln*,ssl-vuln*"
+VULN_SCRIPTS="vuln"
 run_scan 6 "NSE VULN" \
           "nmap -Pn -sV -p$PORTS --script=\"$VULN_SCRIPTS\" -T4 -oN ${DOSSIER}/6-nse-vuln.txt $TARGET" \
           "${DOSSIER}/6-nse-vuln.txt"
 
-# 7. NSE SMB (si ports 139/445)
+# 7. NSE SMB (si 139/445)
 if echo "$PORTS" | grep -qE "139|445"; then
   SMB_PORTS=$(echo "$PORTS" | grep -E "139|445" | tr '\n' ',' | sed 's/,$//')
-  SMB_SCRIPTS="smb-enum-shares,smb-enum-users,smb-vuln-ms17-010"
   run_scan 7 "NSE SMB" \
-            "nmap -Pn -sV -p$SMB_PORTS --script=\"$SMB_SCRIPTS\" -T4 -oN ${DOSSIER}/7-nse-smb.txt $TARGET" \
+            "nmap -Pn -sV -p$SMB_PORTS --script=\"smb-enum-shares\" -T4 -oN ${DOSSIER}/7-nse-smb.txt $TARGET" \
             "${DOSSIER}/7-nse-smb.txt"
 else
-  echo -e "${YELLOW}Pas de ports SMB (139/445) détectés${NC}"
+  echo -e "${YELLOW}Pas de ports SMB (139/445)${NC}"
 fi
 
-# 8. NSE SSH (si port 22)
+# 8. NSE SSH (si 22)
 if echo "$PORTS" | grep -q "22"; then
-  SSH_SCRIPTS="ssh-auth-methods,ssh-hostkey,ssh2-enum-algos"
   run_scan 8 "NSE SSH" \
-            "nmap -Pn -sV -p22 --script=\"$SSH_SCRIPTS\" -T4 -oN ${DOSSIER}/8-nse-ssh.txt $TARGET" \
+            "nmap -Pn -sV -p22 --script=\"ssh-auth-methods\" -T4 -oN ${DOSSIER}/8-nse-ssh.txt $TARGET" \
             "${DOSSIER}/8-nse-ssh.txt"
 else
-  echo -e "${YELLOW}Pas de port SSH (22) détecté${NC}"
+  echo -e "${YELLOW}Pas de port SSH (22)${NC}"
 fi
 
 echo -e "\n${GREEN}Terminé! Résultat dans: $FULL_SCAN${NC}"
-echo -e "${GREEN}Fichiers intermédiaires dans: $DOSSIER/${NC}"
