@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # NAME=mon-nmap-ia
-# VERSION=3.1.0
-# DESCRIPTION=Version finale corrigée avec gestion propre des ports
+# VERSION=9.0.0
+# DESCRIPTION=Version finale ultra-stable et KISS
 # Utilisation : mon-nmap-ia [--debug] <IP|HOST>
 
 set -euo pipefail
@@ -19,7 +19,6 @@ if [[ "$1" == "--debug" ]]; then
   shift
 fi
 
-# Arguments
 TARGET="${1:-}"
 [[ -z "$TARGET" ]] && { echo -e "${RED}Usage: $0 [--debug] <IP|HOST>${NC}"; exit 1; }
 
@@ -31,20 +30,26 @@ FULL_SCAN="$DOSSIER/nmap_full.txt"
 # Initialisation
 : > "$FULL_SCAN"
 
-# Fonction pour exécuter Nmap
+# Fonction pour exécuter un scan Nmap
 run_scan() {
-  local description="$1"
-  local nmap_cmd="$2"
-  local output_file="$3"
+  local step=$1
+  local description=$2
+  local nmap_cmd=$3
+  local output_file=$4
 
-  echo -e "${BLUE}[${description}]${NC}"
-  if $DEBUG; then
-    echo -e "${BLUE}[DEBUG]${NC} $nmap_cmd"
+  echo -e "${BLUE}[${step}] ${description}...${NC}"
+  if $DEBUG; then echo -e "${BLUE}[DEBUG]${NC} $nmap_cmd"; fi
+
+  # Exécution directe sans timeout (plus simple et plus fiable)
+  if ! eval "$nmap_cmd" > "$output_file" 2>&1; then
+    echo -e "${RED}Échec du scan ${step}${NC}"
+    echo "Erreur lors de l'exécution de: $nmap_cmd" > "$output_file"
   fi
 
-  if ! eval "$nmap_cmd" > "$output_file" 2>&1; then
-    echo -e "${RED}Échec du scan${NC}"
-    return 1
+  # Vérification du fichier de sortie
+  if [[ ! -s "$output_file" ]]; then
+    echo -e "${RED}Le fichier ${output_file} est vide${NC}"
+    echo "Aucun résultat pour ce scan" > "$output_file"
   fi
 
   # Ajout au fichier complet
@@ -52,64 +57,73 @@ run_scan() {
   echo -e "# ${description}" >> "$FULL_SCAN"
   echo -e "#==============================================#\n" >> "$FULL_SCAN"
   cat "$output_file" >> "$FULL_SCAN"
-
   echo -e "${GREEN}OK: ${output_file}${NC}"
 }
 
 # 1. Scan TCP complet
-echo -e "${BLUE}[1] Scan TCP complet (1-65535)...${NC}"
-run_scan "SCAN TCP COMPLET" \
-         "nmap -Pn -p- --min-rate 10000 -T4 --max-retries 3 -oN ${DOSSIER}/1-tcp_scan.txt $TARGET" \
-         "${DOSSIER}/1-tcp_scan.txt"
+run_scan 1 "Scan TCP complet (1-65535)" \
+          "nmap -Pn -p- --min-rate 10000 -T4 --max-retries 3 -oN ${DOSSIER}/1-tcp_scan.txt $TARGET" \
+          "${DOSSIER}/1-tcp_scan.txt"
 
-# Extraction propre des ports (format: 22,80,443)
+# Extraction des ports
 PORTS=$(grep -E '^[0-9]+/tcp.*open' "${DOSSIER}/1-tcp_scan.txt" | cut -d'/' -f1 | sort -un | tr '\n' ',' | sed 's/,$//')
-[[ -z "$PORTS" ]] && { echo -e "${RED}Aucun port TCP ouvert${NC}"; exit 1; }
+if [[ -z "$PORTS" ]]; then
+  echo -e "${RED}Aucun port TCP ouvert détecté${NC}"
+  exit 1
+fi
 echo -e "${GREEN}Ports ouverts: $PORTS${NC}"
 
 # 2. Scan agressif
-echo -e "${BLUE}[2] Scan agressif sur $PORTS...${NC}"
-run_scan "SCAN AGRESSIF (-A) sur $PORTS" \
-         "nmap -Pn -A -T4 -p$PORTS -oN ${DOSSIER}/2-aggressive_scan.txt $TARGET" \
-         "${DOSSIER}/2-aggressive_scan.txt"
+run_scan 2 "Scan agressif (-A)" \
+          "nmap -Pn -A -T4 -p$PORTS -oN ${DOSSIER}/2-aggressive_scan.txt $TARGET" \
+          "${DOSSIER}/2-aggressive_scan.txt"
 
 # 3. Scan UDP
-echo -e "${BLUE}[3] Scan UDP top 20...${NC}"
-run_scan "SCAN UDP (top 20)" \
-         "nmap -Pn -sU --top-ports 20 -T4 --max-retries 2 --host-timeout 10m -oN ${DOSSIER}/3-udp_scan.txt $TARGET" \
-         "${DOSSIER}/3-udp_scan.txt"
+run_scan 3 "Scan UDP top 20" \
+          "nmap -Pn -sU --top-ports 20 -T4 --max-retries 2 --host-timeout 10m -oN ${DOSSIER}/3-udp_scan.txt $TARGET" \
+          "${DOSSIER}/3-udp_scan.txt"
 
-# 4. NSE web
-echo -e "${BLUE}[4] NSE web sur $PORTS...${NC}"
-run_scan "NSE WEB sur $PORTS" \
-         "nmap -Pn -sV -p$PORTS --script=\"http-title,http-enum,http-methods,http-headers\" -T4 -oN ${DOSSIER}/4-nse-web.txt $TARGET" \
-         "${DOSSIER}/4-nse-web.txt"
+# 4. NSE WEB (simplifié)
+WEB_SCRIPTS="http-title,http-enum,http-methods,http-headers,http-vhosts,http-server-header,http-robots.txt"
+run_scan 4 "NSE WEB" \
+          "nmap -Pn -sV -p$PORTS --script=\"$WEB_SCRIPTS\" -T4 -oN ${DOSSIER}/4-nse-web.txt $TARGET" \
+          "${DOSSIER}/4-nse-web.txt"
 
-# 5. NSE SSL (si 443 dans PORTS)
+# 5. NSE SSL (avec Heartbleed)
 if echo "$PORTS" | grep -q "443"; then
-  echo -e "${BLUE}[5] NSE SSL sur 443...${NC}"
-  run_scan "NSE SSL sur 443" \
-           "nmap -Pn -sV -p443 --script=\"ssl-enum-ciphers,ssl-cert,ssl-heartbleed\" -T4 -oN ${DOSSIER}/5-nse-ssl.txt $TARGET" \
-           "${DOSSIER}/5-nse-ssl.txt"
+  SSL_SCRIPTS="ssl-enum-ciphers,ssl-cert,ssl-heartbleed"
+  run_scan 5 "NSE SSL (Heartbleed)" \
+            "nmap -Pn -sV -p443 --script=\"$SSL_SCRIPTS\" --script-args=heartbleed=verbose -T4 -oN ${DOSSIER}/5-nse-ssl.txt $TARGET" \
+            "${DOSSIER}/5-nse-ssl.txt"
 else
   echo -e "${YELLOW}Pas de port SSL (443) détecté${NC}"
 fi
 
-# 6. NSE vuln
-echo -e "${BLUE}[6] NSE vuln sur $PORTS...${NC}"
-run_scan "NSE VULN sur $PORTS" \
-         "nmap -Pn -sV -p$PORTS --script=\"vuln*\" -T4 -oN ${DOSSIER}/6-nse-vuln.txt $TARGET" \
-         "${DOSSIER}/6-nse-vuln.txt"
+# 6. NSE VULN (simplifié)
+VULN_SCRIPTS="vuln,exploit,http-vuln*,ssl-vuln*"
+run_scan 6 "NSE VULN" \
+          "nmap -Pn -sV -p$PORTS --script=\"$VULN_SCRIPTS\" -T4 -oN ${DOSSIER}/6-nse-vuln.txt $TARGET" \
+          "${DOSSIER}/6-nse-vuln.txt"
 
-# 7. NSE SMB (si 139 ou 445 dans PORTS)
+# 7. NSE SMB (si ports 139/445)
 if echo "$PORTS" | grep -qE "139|445"; then
   SMB_PORTS=$(echo "$PORTS" | grep -E "139|445" | tr '\n' ',' | sed 's/,$//')
-  echo -e "${BLUE}[7] NSE SMB sur $SMB_PORTS...${NC}"
-  run_scan "NSE SMB sur $SMB_PORTS" \
-           "nmap -Pn -sV -p$SMB_PORTS --script=\"smb-enum-shares,smb-vuln-*\" -T4 -oN ${DOSSIER}/7-nse-smb.txt $TARGET" \
-           "${DOSSIER}/7-nse-smb.txt"
+  SMB_SCRIPTS="smb-enum-shares,smb-enum-users,smb-vuln-ms17-010"
+  run_scan 7 "NSE SMB" \
+            "nmap -Pn -sV -p$SMB_PORTS --script=\"$SMB_SCRIPTS\" -T4 -oN ${DOSSIER}/7-nse-smb.txt $TARGET" \
+            "${DOSSIER}/7-nse-smb.txt"
 else
   echo -e "${YELLOW}Pas de ports SMB (139/445) détectés${NC}"
+fi
+
+# 8. NSE SSH (si port 22)
+if echo "$PORTS" | grep -q "22"; then
+  SSH_SCRIPTS="ssh-auth-methods,ssh-hostkey,ssh2-enum-algos"
+  run_scan 8 "NSE SSH" \
+            "nmap -Pn -sV -p22 --script=\"$SSH_SCRIPTS\" -T4 -oN ${DOSSIER}/8-nse-ssh.txt $TARGET" \
+            "${DOSSIER}/8-nse-ssh.txt"
+else
+  echo -e "${YELLOW}Pas de port SSH (22) détecté${NC}"
 fi
 
 echo -e "\n${GREEN}Terminé! Résultat dans: $FULL_SCAN${NC}"
