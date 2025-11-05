@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# NAME=mon-nmap-ia
+# VERSION=1.0.0
+# DESCRIPTION=Version alignée sur 'mon-nmap --nse-all' : génère un seul fichier nmap_full.txt avec des en-têtes claires.
+# Utilisation : mon-nmap-ia [--debug] <IP|HOST>
+
+set -euo pipefail
+
+# Couleurs
+GREEN=$'\033[1;32m'; YELLOW=$'\033[1;33m'; BLUE=$'\033[1;34m'; RED=$'\033[1;31m'; NC=$'\033[0m'
+
+# Vérification des dépendances
+command -v nmap >/dev/null || { echo -e "${RED}nmap manquant${NC}"; exit 1; }
+
+# Gestion du flag --debug
+DEBUG=false
+if [[ "$1" == "--debug" ]]; then
+  DEBUG=true
+  shift
+fi
+
+# Arguments
+TARGET="${1:-}"
+[[ -z "$TARGET" ]] && { echo -e "${RED}Usage: $0 [--debug] <IP|HOST>${NC}"; exit 1; }
+
+# Dossier de sortie
+DOSSIER="nmap_${TARGET}"
+mkdir -p "$DOSSIER"
+FULL_SCAN="$DOSSIER/nmap_full.txt"
+
+# Initialisation du fichier de sortie
+: > "$FULL_SCAN"
+
+# Fonction pour exécuter Nmap avec debug
+run_nmap() {
+  local cmd="$*"
+  if $DEBUG; then
+    echo -e "${BLUE}[DEBUG]${NC} $cmd"
+  fi
+  eval "$cmd" >> "$FULL_SCAN" 2>&1
+}
+
+# 1. Scan TCP complet (1-65535) avec -Pn
+echo -e "${BLUE}[1] Scan TCP complet (1-65535) avec -Pn...${NC}"
+echo -e "\n\n#==============================================#" >> "$FULL_SCAN"
+echo -e "# SCAN TCP COMPLET (1-65535) -Pn" >> "$FULL_SCAN"
+echo -e "#==============================================#\n" >> "$FULL_SCAN"
+run_nmap nmap -Pn -p- --min-rate 10000 -T4 --max-retries 3 -oN "${DOSSIER}/1-tcp_scan.txt" "$TARGET"
+PORTS="$(grep -E '^[[:space:]]*[0-9]+/tcp[[:space:]]+open' "${DOSSIER}/1-tcp_scan.txt" | cut -d'/' -f1 | paste -sd, -)"
+[[ -z "$PORTS" ]] && { echo -e "${RED}Aucun port TCP ouvert.${NC}"; exit 1; }
+echo -e "${GREEN}Ports TCP détectés : $PORTS${NC}"
+
+# 2. Scan agressif (-A) sur les ports ouverts
+echo -e "${BLUE}[2] Scan agressif (-A) sur ports $PORTS...${NC}"
+echo -e "\n\n#==============================================#" >> "$FULL_SCAN"
+echo -e "# SCAN AGRESSIF (-A) sur ports $PORTS" >> "$FULL_SCAN"
+echo -e "#==============================================#\n" >> "$FULL_SCAN"
+run_nmap nmap -Pn -A -T4 -p"$PORTS" -oN "${DOSSIER}/2-aggressive_scan.txt" "$TARGET"
+
+# 3. Scan UDP top 20
+echo -e "${BLUE}[3] Scan UDP top 20 avec -Pn...${NC}"
+echo -e "\n\n#==============================================#" >> "$FULL_SCAN"
+echo -e "# SCAN UDP (TOP 20) -Pn" >> "$FULL_SCAN"
+echo -e "#==============================================#\n" >> "$FULL_SCAN"
+run_nmap nmap -Pn -sU --top-ports 20 -T4 --max-retries 2 --host-timeout 10m -oN "${DOSSIER}/3-udp_scan.txt" "$TARGET"
+
+# 4. Passes NSE (web/ssl/vuln/smb)
+echo -e "${BLUE}[4] Passes NSE (web/ssl/vuln/smb)...${NC}"
+
+# Détection des ports SSL/SMB
+SSL_PORTS="$(grep -E 'open.*ssl' "${DOSSIER}/2-aggressive_scan.txt" | cut -d'/' -f1 | paste -sd, -)"
+SMB_PORTS="$(echo "$PORTS" | tr ',' '\n' | grep -E '^(139|445)$' | paste -sd, -)"
+
+# NSE web
+echo -e "${YELLOW}[NSE] web: http-* sur ports $PORTS${NC}"
+echo -e "\n\n#==============================================#" >> "$FULL_SCAN"
+echo -e "# NSE WEB (http-*) sur ports $PORTS" >> "$FULL_SCAN"
+echo -e "#==============================================#\n" >> "$FULL_SCAN"
+run_nmap nmap -Pn -sV -p"$PORTS" --script="http-title,http-enum,http-methods,http-headers,http-vhosts,http-server-header" -T4 -oN "${DOSSIER}/4-nse-web.txt" "$TARGET"
+
+# NSE ssl (si ports SSL détectés)
+if [[ -n "$SSL_PORTS" ]]; then
+  echo -e "${YELLOW}[NSE] ssl: ssl-* sur ports $SSL_PORTS${NC}"
+  echo -e "\n\n#==============================================#" >> "$FULL_SCAN"
+  echo -e "# NSE SSL (ssl-*) sur ports $SSL_PORTS" >> "$FULL_SCAN"
+  echo -e "#==============================================#\n" >> "$FULL_SCAN"
+  run_nmap nmap -Pn -sV -p"$SSL_PORTS" --script="ssl-enum-ciphers,ssl-cert,ssl-heartbleed,ssl-dh-params" -T4 -oN "${DOSSIER}/4-nse-ssl.txt" "$TARGET"
+else
+  echo -e "${YELLOW}[NSE] ssl: aucun port SSL détecté — passe sautée.${NC}"
+fi
+
+# NSE vuln
+echo -e "${YELLOW}[NSE] vuln: vuln-* sur ports $PORTS${NC}"
+echo -e "\n\n#==============================================#" >> "$FULL_SCAN"
+echo -e "# NSE VULN (vuln-*) sur ports $PORTS" >> "$FULL_SCAN"
+echo -e "#==============================================#\n" >> "$FULL_SCAN"
+run_nmap nmap -Pn -sV -p"$PORTS" --script="vuln*" -T4 -oN "${DOSSIER}/4-nse-vuln.txt" "$TARGET"
+
+# NSE smb (si ports SMB détectés)
+if [[ -n "$SMB_PORTS" ]]; then
+  echo -e "${YELLOW}[NSE] smb: smb-*/smb2-* sur ports $SMB_PORTS${NC}"
+  echo -e "\n\n#==============================================#" >> "$FULL_SCAN"
+  echo -e "# NSE SMB (smb-*/smb2-*) sur ports $SMB_PORTS" >> "$FULL_SCAN"
+  echo -e "#==============================================#\n" >> "$FULL_SCAN"
+  run_nmap nmap -Pn -sV -p"$SMB_PORTS" --script="smb-enum-shares,smb-enum-users,smb2-capabilities,smb2-time,smb2-security-mode,smb-vuln-ms17-010" -T4 -oN "${DOSSIER}/4-nse-smb.txt" "$TARGET"
+else
+  echo -e "${YELLOW}[NSE] smb: aucun port 139/445 ouvert — passe sautée.${NC}"
+fi
+
+# Affichage final
+echo -e "${GREEN}Terminé. Résultat dans : $FULL_SCAN${NC}"
