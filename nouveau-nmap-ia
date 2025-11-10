@@ -1,0 +1,36 @@
+#!/bin/bash
+
+# Vérification de l'argument
+if [ -z "$1" ]; then
+    echo "❌ Usage: $0 <IP_OU_DOMAINE>"
+    exit 1
+fi
+
+TARGET="$1"
+OUTPUT_DIR="mes_scans"
+
+# Création du répertoire de sortie
+mkdir -p "$OUTPUT_DIR"
+
+# ===== ÉTAPE 1: SCAN COMPLET DES PORTS TCP =====
+echo "[1/3] Scan complet des ports TCP..."
+nmap -Pn -p- --min-rate 5000 -T4 --max-retries 3 -oN "$OUTPUT_DIR/full_tcp_scan.txt" "$TARGET"
+
+# ===== ÉTAPE 2: EXTRACTION DES PORTS OUVERTS =====
+PORTS=$(grep -oP '\d+/open' "$OUTPUT_DIR/full_tcp_scan.txt" | cut -d'/' -f1 | tr '\n' ',' | sed 's/,$//')
+echo "Ports ouverts: $PORTS"
+
+# Vérification des ports ouverts
+if [ -z "$PORTS" ]; then
+    echo "⚠️ Aucun port TCP ouvert détecté. Scan agressif ignoré."
+else
+    # ===== ÉTAPE 3: SCAN AGRESSIF CIBLÉ =====
+    echo "[2/3] Scan agressif sur les ports $PORTS..."
+    nmap -Pn -A -sV -p"$PORTS" --script="vuln,http-vuln-*,smb-vuln-*,ssl-vuln-*,ftp-vuln-*,mysql-vuln-*,rpc-vuln-*,dns-vuln-*,auth" -T4 -oN "$OUTPUT_DIR/aggressive_vuln_scan.txt" "$TARGET"
+fi
+
+# ===== ÉTAPE 4: SCAN UDP CIBLÉ =====
+echo "[3/3] Scan UDP (top 20 ports)..."
+nmap -n -Pn -sU --top-ports 20 -T4 -oN "$OUTPUT_DIR/udp_vuln_scan.txt" "$TARGET"
+
+echo "✅ Scans terminés. Résultats dans $OUTPUT_DIR/"
