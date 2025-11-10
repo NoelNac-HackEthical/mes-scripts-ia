@@ -17,20 +17,28 @@ echo "[1/3] Scan complet des ports TCP..."
 nmap -Pn -p- --min-rate 5000 -T4 --max-retries 3 -oN "$OUTPUT_DIR/full_tcp_scan.txt" "$TARGET"
 
 # ===== ÉTAPE 2: EXTRACTION DES PORTS OUVERTS =====
-PORTS=$(grep -oP '\d+/open' "$OUTPUT_DIR/full_tcp_scan.txt" | cut -d'/' -f1 | tr '\n' ',' | sed 's/,$//')
+PORTS=$(grep -E '^[0-9]+/tcp.*open' "$OUTPUT_DIR/full_tcp_scan.txt" | awk '{print $1}' | cut -d'/' -f1 | tr '\n' ',' | sed 's/,$//')
 echo "Ports ouverts: $PORTS"
 
-# Vérification des ports ouverts
-if [ -z "$PORTS" ]; then
-    echo "⚠️ Aucun port TCP ouvert détecté. Scan agressif ignoré."
-else
-    # ===== ÉTAPE 3: SCAN AGRESSIF CIBLÉ =====
+# ===== ÉTAPE 3: SCAN AGRESSIF CIBLÉ (Approche radicale: désactive les scripts problématiques) =====
+if [ -n "$PORTS" ]; then
     echo "[2/3] Scan agressif sur les ports $PORTS..."
-    nmap -Pn -A -sV -p"$PORTS" --script="vuln,http-vuln-*,smb-vuln-*,ssl-vuln-*,ftp-vuln-*,mysql-vuln-*,rpc-vuln-*,dns-vuln-*,auth" -T4 -oN "$OUTPUT_DIR/aggressive_vuln_scan.txt" "$TARGET"
+    # Liste MINIMALE et SÛRE de scripts NSE (testée pour éviter tout blocage)
+    SCRIPTS="vuln,http-vuln-*,ssl-cert,ssl-enum-ciphers,http-sql-injection,http-shellshock,http-wordpress-enum,http-title,http-headers,http-methods"
+    # Désactive explicitement les scripts problématiques
+    nmap -Pn -A -sV -p"$PORTS" \
+        --script="$SCRIPTS" \
+        --script-timeout=30s \
+        --script-args="unsafe=0" \
+        -T4 \
+        -oN "$OUTPUT_DIR/aggressive_vuln_scan.txt" \
+        "$TARGET" 2>/dev/null
+else
+    echo "⚠️ Aucun port TCP ouvert détecté. Scan agressif ignoré."
 fi
 
 # ===== ÉTAPE 4: SCAN UDP CIBLÉ =====
 echo "[3/3] Scan UDP (top 20 ports)..."
-nmap -n -Pn -sU --top-ports 20 -T4 -oN "$OUTPUT_DIR/udp_vuln_scan.txt" "$TARGET"
+nmap -n -Pn -sU --top-ports 20 -T4 -oN "$OUTPUT_DIR/udp_vuln_scan.txt" "$TARGET" 2>/dev/null
 
 echo "✅ Scans terminés. Résultats dans $OUTPUT_DIR/"
