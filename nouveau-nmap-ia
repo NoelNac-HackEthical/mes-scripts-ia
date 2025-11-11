@@ -20,18 +20,26 @@ nmap -Pn -p- --min-rate 5000 -T4 --max-retries 3 -oN "$OUTPUT_DIR/full_tcp_scan.
 PORTS=$(grep -E '^[0-9]+/tcp.*open' "$OUTPUT_DIR/full_tcp_scan.txt" | awk '{print $1}' | cut -d'/' -f1 | tr '\n' ',' | sed 's/,$//')
 echo "Ports ouverts: $PORTS"
 
-# ===== ÉTAPE 3: SCAN AGRESSIF CIBLÉ (Détection CMS enrichie) =====
+# ===== ÉTAPE 3: SCAN AGRESSIF CIBLÉ (Vulnérabilités générales) =====
 if [ -n "$PORTS" ]; then
-    echo "[2/3] Scan agressif sur les ports $PORTS (détection CMS enrichie)..."
-    # Liste optimisée avec tous les scripts CMS disponibles
-    SCRIPTS="vuln,http-vuln-*,ssl-cert,ssl-enum-ciphers,http-sql-injection,http-shellshock,http-wordpress-enum,http-wordpress-brute,http-wordpress-users,http-drupal-enum,http-drupal-enum-users,http-joomla-brute,http-generator,http-robots.txt,http-title,http-headers,http-methods,http-enum,http-devframework,http-cakephp-version,http-php-version,http-config-backup,http-backup-finder,http-sitemap-generator"
-    nmap -Pn -A -sV -p"$PORTS" --script="$SCRIPTS" --script-timeout=30s -T4 -oN "$OUTPUT_DIR/aggressive_vuln_scan.txt" "$TARGET"
+    echo "[2/3] Scan agressif sur les ports $PORTS (vulnérabilités générales)..."
+    # Scripts orientés vulnérabilités générales
+    VULN_SCRIPTS="vuln,http-vuln-*,ssl-cert,ssl-enum-ciphers,http-sql-injection,http-shellshock"
+    nmap -Pn -A -sV -p"$PORTS" --script="$VULN_SCRIPTS" --script-timeout=30s -T4 -oN "$OUTPUT_DIR/aggressive_vuln_scan.txt" "$TARGET"
 else
     echo "⚠️ Aucun port TCP ouvert détecté. Scan agressif ignoré."
 fi
 
-# ===== ÉTAPE 4: SCAN UDP CIBLÉ =====
-echo "[3/3] Scan UDP (top 20 ports)..."
+# ===== ÉTAPE 4: SCAN CIBLÉ CMS =====
+if [ -n "$PORTS" ]; then
+    echo "[3/3] Scan orienté CMS sur les ports $PORTS..."
+    # Scripts orientés CMS
+    CMS_SCRIPTS="http-wordpress-enum,http-wordpress-brute,http-wordpress-users,http-drupal-enum,http-drupal-enum-users,http-joomla-brute,http-generator,http-robots.txt,http-title,http-headers,http-methods,http-enum,http-devframework,http-cakephp-version,http-php-version,http-config-backup,http-backup-finder,http-sitemap-generator"
+    nmap -Pn -sV -p"$PORTS" --script="$CMS_SCRIPTS" --script-timeout=30s -T4 -oN "$OUTPUT_DIR/cms_vuln_scan.txt" "$TARGET"
+fi
+
+# ===== ÉTAPE 5: SCAN UDP CIBLÉ =====
+echo "[4/4] Scan UDP (top 20 ports)..."
 nmap -n -Pn -sU --top-ports 20 -T4 -oN "$OUTPUT_DIR/udp_vuln_scan.txt" "$TARGET"
 
 echo "✅ Scans terminés. Résultats dans $OUTPUT_DIR/"
