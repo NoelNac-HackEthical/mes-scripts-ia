@@ -13,7 +13,7 @@ OUTPUT_DIR="mes_scans"
 mkdir -p "$OUTPUT_DIR"
 
 # ===== ÉTAPE 1: SCAN COMPLET DES PORTS TCP =====
-echo "[1/3] Scan complet des ports TCP..."
+echo "[1/4] Scan complet des ports TCP..."
 nmap -Pn -p- --min-rate 5000 -T4 --max-retries 3 -oN "$OUTPUT_DIR/full_tcp_scan.txt" "$TARGET"
 
 # ===== ÉTAPE 2: EXTRACTION DES PORTS OUVERTS =====
@@ -22,7 +22,7 @@ echo "Ports ouverts: $PORTS"
 
 # ===== ÉTAPE 3: SCAN AGRESSIF CIBLÉ (Vulnérabilités générales) =====
 if [ -n "$PORTS" ]; then
-    echo "[2/3] Scan agressif sur les ports $PORTS (vulnérabilités générales)..."
+    echo "[2/4] Scan agressif sur les ports $PORTS (vulnérabilités générales)..."
     # Scripts orientés vulnérabilités générales
     VULN_SCRIPTS="vuln,http-vuln-*,ssl-cert,ssl-enum-ciphers,http-sql-injection,http-shellshock"
     nmap -Pn -A -sV -p"$PORTS" --script="$VULN_SCRIPTS" --script-timeout=30s -T4 -oN "$OUTPUT_DIR/aggressive_vuln_scan.txt" "$TARGET"
@@ -32,7 +32,7 @@ fi
 
 # ===== ÉTAPE 4: SCAN CIBLÉ CMS =====
 if [ -n "$PORTS" ]; then
-    echo "[3/3] Scan orienté CMS sur les ports $PORTS..."
+    echo "[3/4] Scan orienté CMS sur les ports $PORTS..."
     # Scripts orientés CMS
     CMS_SCRIPTS="http-wordpress-enum,http-wordpress-brute,http-wordpress-users,http-drupal-enum,http-drupal-enum-users,http-joomla-brute,http-generator,http-robots.txt,http-title,http-headers,http-methods,http-enum,http-devframework,http-cakephp-version,http-php-version,http-config-backup,http-backup-finder,http-sitemap-generator"
     nmap -Pn -sV -p"$PORTS" --script="$CMS_SCRIPTS" --script-timeout=30s -T4 -oN "$OUTPUT_DIR/cms_vuln_scan.txt" "$TARGET"
