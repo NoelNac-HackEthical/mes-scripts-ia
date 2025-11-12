@@ -20,12 +20,41 @@ nmap -Pn -p- --min-rate 5000 -T4 --max-retries 3 -oN "$OUTPUT_DIR/full_tcp_scan.
 PORTS=$(grep -E '^[0-9]+/tcp.*open' "$OUTPUT_DIR/full_tcp_scan.txt" | awk '{print $1}' | cut -d'/' -f1 | tr '\n' ',' | sed 's/,$//')
 echo "Ports ouverts: $PORTS"
 
-# ===== ÉTAPE 3: SCAN AGRESSIF CIBLÉ (Vulnérabilités générales) =====
+# ===== ÉTAPE 3: SCAN AGRESSIF CIBLÉ (Filtré CVSS ≥ 9.0) =====
 if [ -n "$PORTS" ]; then
-    echo "[2/4] Scan agressif sur les ports $PORTS (vulnérabilités générales)..."
-    # Scripts orientés vulnérabilités générales
+    echo "[2/4] Scan agressif sur les ports $PORTS (filtré CVSS ≥ 9.0)..."
     VULN_SCRIPTS="vuln,http-vuln-*,ssl-cert,ssl-enum-ciphers,http-sql-injection,http-shellshock"
-    nmap -Pn -A -sV -p"$PORTS" --script="$VULN_SCRIPTS" --script-timeout=30s -T4 -oN "$OUTPUT_DIR/aggressive_vuln_scan.txt" "$TARGET"
+
+    # 1. Lancer le scan complet dans un fichier temporaire
+    TEMP_FILE="$OUTPUT_DIR/aggressive_vuln_scan_temp.txt"
+    nmap -Pn -A -sV -p"$PORTS" --script="$VULN_SCRIPTS" --script-timeout=30s -T4 -oN "$TEMP_FILE" "$TARGET"
+
+    # 2. Filtrer les vulnérabilités < 9.0 avec une approche plus simple
+    # Créer un fichier vide pour le résultat filtré
+    > "$OUTPUT_DIR/aggressive_vuln_scan.txt"
+
+    # Parcourir le fichier temporaire ligne par ligne
+    while IFS= read -r line; do
+        # Vérifier si la ligne contient un score CVSS
+        if [[ $line =~ \	([0-9]+\.[0-9])\	 ]]; then
+            score=${BASH_REMATCH[1]}
+            # Si le score est ≥ 9.0, garder la ligne
+            if (( $(echo "$score >= 9.0" | bc -l) )); then
+                echo "$line" >> "$OUTPUT_DIR/aggressive_vuln_scan.txt"
+            fi
+        else
+            # Si ce n'est pas une ligne avec score, la garder
+            echo "$line" >> "$OUTPUT_DIR/aggressive_vuln_scan.txt"
+        fi
+    done < "$TEMP_FILE"
+
+    # Vérifier si le fichier est vide
+    if [ ! -s "$OUTPUT_DIR/aggressive_vuln_scan.txt" ]; then
+        echo "[!] Aucune vulnérabilité critique (CVSS ≥ 9.0) trouvée." > "$OUTPUT_DIR/aggressive_vuln_scan.txt"
+    fi
+
+    # Nettoyer le fichier temporaire
+    rm -f "$TEMP_FILE"
 else
     echo "⚠️ Aucun port TCP ouvert détecté. Scan agressif ignoré."
 fi
@@ -33,7 +62,6 @@ fi
 # ===== ÉTAPE 4: SCAN CIBLÉ CMS =====
 if [ -n "$PORTS" ]; then
     echo "[3/4] Scan orienté CMS sur les ports $PORTS..."
-    # Scripts orientés CMS
     CMS_SCRIPTS="http-wordpress-enum,http-wordpress-brute,http-wordpress-users,http-drupal-enum,http-drupal-enum-users,http-joomla-brute,http-generator,http-robots.txt,http-title,http-headers,http-methods,http-enum,http-devframework,http-cakephp-version,http-php-version,http-config-backup,http-backup-finder,http-sitemap-generator"
     nmap -Pn -sV -p"$PORTS" --script="$CMS_SCRIPTS" --script-timeout=30s -T4 -oN "$OUTPUT_DIR/cms_vuln_scan.txt" "$TARGET"
 fi
@@ -42,4 +70,4 @@ fi
 echo "[4/4] Scan UDP (top 20 ports)..."
 nmap -n -Pn -sU --top-ports 20 -T4 -oN "$OUTPUT_DIR/udp_vuln_scan.txt" "$TARGET"
 
-echo "✅ Scans terminés. Résultats dans $OUTPUT_DIR/"
+echo "✅ Scans terminés. Résultats filtrés (CVSS ≥ 9.0) dans $OUTPUT_DIR/aggressive_vuln_scan.txt"
